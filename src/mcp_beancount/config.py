@@ -38,6 +38,36 @@ class AppConfig(BaseModel):
     http_path: str = Field(default="/mcp", description="HTTP path prefix for the MCP transport.")
     enable_nl: bool = Field(default=True, description="Enable the natural-language BeanQuery tool.")
 
+    # Optional Google OAuth authentication for HTTP transports
+    google_auth_enabled: bool = Field(
+        default=False,
+        description="Enable Google OAuth authentication for HTTP endpoints.",
+    )
+    google_client_id: str | None = Field(
+        default=None, description="Google OAuth Client ID (required if auth enabled)."
+    )
+    google_client_secret: str | None = Field(
+        default=None, description="Google OAuth Client Secret (required if auth enabled)."
+    )
+    google_base_url: str | None = Field(
+        default=None,
+        description=(
+            "Base URL where the server is reachable for OAuth redirects. "
+            "Defaults to http://{http_host}:{http_port} if not set."
+        ),
+    )
+    google_required_scopes: list[str] = Field(
+        default_factory=lambda: [
+            "openid",
+            "https://www.googleapis.com/auth/userinfo.email",
+        ],
+        description="OAuth scopes to request from Google.",
+    )
+    google_redirect_path: str | None = Field(
+        default=None,
+        description="Optional OAuth redirect path (defaults to provider's /auth/callback).",
+    )
+
     model_config = {"validate_assignment": True}
 
     @model_validator(mode="after")
@@ -51,6 +81,19 @@ class AppConfig(BaseModel):
         backup_dir = self.backup_dir or ledger_path.parent / ".backups"
         object.__setattr__(self, "ledger_path", ledger_path)
         object.__setattr__(self, "backup_dir", backup_dir.expanduser().resolve())
+
+        # If Google auth is enabled, ensure required fields are present and set defaults.
+        if self.google_auth_enabled:
+            if not self.google_client_id or not self.google_client_secret:
+                raise ConfigError(
+                    "Google auth enabled but google_client_id/google_client_secret are not configured."
+                )
+            if not self.google_base_url:
+                object.__setattr__(
+                    self,
+                    "google_base_url",
+                    f"http://{self.http_host}:{self.http_port}",
+                )
         return self
 
 
@@ -112,6 +155,13 @@ def load_config(
         "HTTP_PORT": "http_port",
         "HTTP_PATH": "http_path",
         "ENABLE_NL": "enable_nl",
+        # Google OAuth
+        "GOOGLE_AUTH_ENABLED": "google_auth_enabled",
+        "GOOGLE_CLIENT_ID": "google_client_id",
+        "GOOGLE_CLIENT_SECRET": "google_client_secret",
+        "GOOGLE_BASE_URL": "google_base_url",
+        "GOOGLE_REQUIRED_SCOPES": "google_required_scopes",
+        "GOOGLE_REDIRECT_PATH": "google_redirect_path",
     }
 
     for env_key, field_name in env_mapping.items():
@@ -121,8 +171,12 @@ def load_config(
                 config_data[field_name] = float(value)
             elif field_name in {"http_port", "backup_retention"}:
                 config_data[field_name] = int(value)
-            elif field_name in {"dry_run_default", "enable_nl"}:
+            elif field_name in {"dry_run_default", "enable_nl", "google_auth_enabled"}:
                 config_data[field_name] = value.lower() in {"1", "true", "yes", "on"}
+            elif field_name in {"google_required_scopes"}:
+                # Comma or space separated list
+                scopes = [s.strip() for s in value.replace(" ", ",").split(",") if s.strip()]
+                config_data[field_name] = scopes
             else:
                 config_data[field_name] = value
 

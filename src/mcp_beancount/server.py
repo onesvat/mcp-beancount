@@ -37,13 +37,64 @@ INSTRUCTIONS = (
 def create_server(config: AppConfig) -> FastMCP:
     ledger = LedgerManager(config)
 
-    server = FastMCP(
-        name="mcp-beancount",
-        instructions=INSTRUCTIONS,
-        host=config.http_host,
-        port=config.http_port,
-        streamable_http_path=config.http_path,
-    )
+    # Optional Google OAuth authentication (if configured and supported by FastMCP build)
+    extra_kwargs: dict[str, Any] = {}
+    _auth_active = False
+    if getattr(config, "google_auth_enabled", False):
+        GoogleProvider = None  # type: ignore[assignment]
+        # Try imports from both fastmcp and mcp.fastmcp namespaces for compatibility
+        try:  # fastmcp package
+            from fastmcp.server.auth.providers.google import GoogleProvider as _GP  # type: ignore
+            GoogleProvider = _GP
+        except Exception:
+            try:
+                from mcp.server.fastmcp.auth.providers.google import GoogleProvider as _GP  # type: ignore
+                GoogleProvider = _GP
+            except Exception:
+                GoogleProvider = None  # type: ignore
+
+        if GoogleProvider is not None and config.google_client_id and config.google_client_secret:
+            try:
+                auth_provider = GoogleProvider(
+                    client_id=config.google_client_id,
+                    client_secret=config.google_client_secret,
+                    base_url=(config.google_base_url or f"http://{config.http_host}:{config.http_port}"),
+                    required_scopes=(config.google_required_scopes or [
+                        "openid",
+                        "https://www.googleapis.com/auth/userinfo.email",
+                    ]),
+                    **({"redirect_path": config.google_redirect_path} if config.google_redirect_path else {}),
+                )
+                extra_kwargs["auth"] = auth_provider
+                _auth_active = True
+            except Exception as _exc:  # pragma: no cover - optional path
+                print(f"Warning: Failed to initialize Google auth provider: {_exc}", file=sys.stderr)
+        else:
+            print(
+                "Warning: Google auth enabled in config, but provider package not available or credentials missing.",
+                file=sys.stderr,
+            )
+
+    # Create the FastMCP server; if 'auth' is unsupported, fall back without it
+    try:
+        server = FastMCP(
+            name="mcp-beancount",
+            instructions=INSTRUCTIONS,
+            host=config.http_host,
+            port=config.http_port,
+            streamable_http_path=config.http_path,
+            **extra_kwargs,
+        )
+    except TypeError as _exc:
+        if "auth" in extra_kwargs:
+            print("FastMCP build does not accept 'auth' parameter; continuing without authentication.", file=sys.stderr)
+        server = FastMCP(
+            name="mcp-beancount",
+            instructions=INSTRUCTIONS,
+            host=config.http_host,
+            port=config.http_port,
+            streamable_http_path=config.http_path,
+        )
 
     # Register a read-only Markdown cheat sheet as a resource
     cheatsheet_path = (Path(__file__).resolve().parent.parent / "docs" / "beanquery-cheatsheet.md").resolve()
@@ -202,6 +253,35 @@ def create_server(config: AppConfig) -> FastMCP:
     ) -> NaturalLanguageResult:
         req = NaturalLanguageRequest(question=question)
         return _run_tool(lambda: ledger.natural_language_query(req))
+
+    # Optionally expose a protected tool to introspect authenticated Google user info
+    if _auth_active:
+        _get_access_token = None
+        try:
+            from fastmcp.server.dependencies import get_access_token as _gat  # type: ignore
+            _get_access_token = _gat
+        except Exception:
+            try:
+                from mcp.server.fastmcp.dependencies import get_access_token as _gat  # type: ignore
+                _get_access_token = _gat
+            except Exception:
+                _get_access_token = None
+
+        if _get_access_token is not None:
+            @server.tool(
+                name="get_user_info",
+                description="Return information about the authenticated Google user (requires OAuth).",
+            )
+            def get_user_info() -> dict[str, Any]:
+                token = _get_access_token()
+                claims = getattr(token, "claims", {}) or {}
+                return {
+                    "google_id": claims.get("sub"),
+                    "email": claims.get("email"),
+                    "name": claims.get("name"),
+                    "picture": claims.get("picture"),
+                    "locale": claims.get("locale"),
+                }
 
     return server
 
