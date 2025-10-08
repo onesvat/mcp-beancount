@@ -2,8 +2,6 @@ import argparse
 import sys
 from typing import Any, Callable, Sequence, Annotated
 
-from mcp.server import FastMCP
-
 from .config import AppConfig, load_config
 from .exceptions import MCPBeancountError, NaturalLanguageError
 from .ledger import LedgerManager
@@ -34,28 +32,20 @@ INSTRUCTIONS = (
 )
 
 
-def create_server(config: AppConfig) -> FastMCP:
+def create_server(config: AppConfig):
     ledger = LedgerManager(config)
 
-    # Optional Google OAuth authentication (if configured and supported by FastMCP build)
-    extra_kwargs: dict[str, Any] = {}
+    # Optional Google OAuth authentication (if configured). We keep provider and server class consistent.
     _auth_active = False
+    auth_provider = None
+    FastMCP_cls = None
     if getattr(config, "google_auth_enabled", False):
-        GoogleProvider = None  # type: ignore[assignment]
-        # Try imports from both fastmcp and mcp.fastmcp namespaces for compatibility
-        try:  # fastmcp package
+        try:
+            from fastmcp import FastMCP as _FastMCP  # type: ignore
             from fastmcp.server.auth.providers.google import GoogleProvider as _GP  # type: ignore
-            GoogleProvider = _GP
-        except Exception:
-            try:
-                from mcp.server.fastmcp.auth.providers.google import GoogleProvider as _GP  # type: ignore
-                GoogleProvider = _GP
-            except Exception:
-                GoogleProvider = None  # type: ignore
-
-        if GoogleProvider is not None and config.google_client_id and config.google_client_secret:
-            try:
-                auth_provider = GoogleProvider(
+            FastMCP_cls = _FastMCP
+            if config.google_client_id and config.google_client_secret:
+                auth_provider = _GP(
                     client_id=config.google_client_id,
                     client_secret=config.google_client_secret,
                     base_url=(config.google_base_url or f"http://{config.http_host}:{config.http_port}"),
@@ -65,30 +55,32 @@ def create_server(config: AppConfig) -> FastMCP:
                     ]),
                     **({"redirect_path": config.google_redirect_path} if config.google_redirect_path else {}),
                 )
-                extra_kwargs["auth"] = auth_provider
                 _auth_active = True
-            except Exception as _exc:  # pragma: no cover - optional path
-                print(f"Warning: Failed to initialize Google auth provider: {_exc}", file=sys.stderr)
-        else:
+            else:
+                print(
+                    "Warning: Google auth enabled but client_id/secret are missing; continuing without auth.",
+                    file=sys.stderr,
+                )
+        except Exception as _exc:
             print(
-                "Warning: Google auth enabled in config, but provider package not available or credentials missing.",
+                f"Warning: Google auth enabled but fastmcp auth stack not available ({_exc!s}); continuing without auth.",
                 file=sys.stderr,
             )
 
-    # Create the FastMCP server; if 'auth' is unsupported, fall back without it
-    try:
-        server = FastMCP(
+    if FastMCP_cls is None:
+        from mcp.server import FastMCP as FastMCP_cls  # type: ignore
+
+    if _auth_active and auth_provider is not None:
+        server = FastMCP_cls(
             name="mcp-beancount",
             instructions=INSTRUCTIONS,
             host=config.http_host,
             port=config.http_port,
             streamable_http_path=config.http_path,
-            **extra_kwargs,
+            auth=auth_provider,  # type: ignore[arg-type]
         )
-    except TypeError as _exc:
-        if "auth" in extra_kwargs:
-            print("FastMCP build does not accept 'auth' parameter; continuing without authentication.", file=sys.stderr)
-        server = FastMCP(
+    else:
+        server = FastMCP_cls(
             name="mcp-beancount",
             instructions=INSTRUCTIONS,
             host=config.http_host,
