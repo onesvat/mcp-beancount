@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(uv run:*)",
+      "Bash(find:*)",
+      "Bash(uv tool install:*)",
+      "Bash(gtimeout:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

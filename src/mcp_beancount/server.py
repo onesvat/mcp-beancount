@@ -104,6 +104,14 @@ def create_server(config: AppConfig):
         if config.google_allowed_emails:
             allowed_email_set = {email.lower() for email in config.google_allowed_emails if email}
 
+    def _run_tool(callable_: Callable[[], Any]) -> Any:
+        try:
+            return callable_()
+        except NaturalLanguageError as exc:
+            raise ValueError(str(exc)) from exc
+        except MCPBeancountError as exc:
+            raise ValueError(str(exc)) from exc
+
     def _run_tool_authorized(callable_: Callable[[], Any]) -> Any:
         if allowed_email_set:
             if _get_access_token is None:
@@ -303,15 +311,6 @@ def create_server(config: AppConfig):
     return server
 
 
-def _run_tool(callable_: Callable[[], Any]) -> Any:
-    try:
-        return callable_()
-    except NaturalLanguageError as exc:
-        raise ValueError(str(exc)) from exc
-    except MCPBeancountError as exc:
-        raise ValueError(str(exc)) from exc
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the MCP Beancount HTTP server.")
     parser.add_argument("--config", help="Path to configuration file.")
@@ -331,6 +330,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     server = create_server(config)
     try:
+        # Configure global settings before running
+        from fastmcp import settings
+        settings.host = config.http_host
+        settings.port = config.http_port
+        settings.streamable_http_path = config.http_path
         server.run(transport=args.transport)
     except Exception as exc:  # pragma: no cover - FastMCP handles signals internally
         print(f"Server error: {exc}", file=sys.stderr)
