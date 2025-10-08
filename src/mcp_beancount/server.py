@@ -88,6 +88,36 @@ def create_server(config: AppConfig):
             streamable_http_path=config.http_path,
         )
 
+    _get_access_token = None
+    allowed_email_set: set[str] = set()
+    if _auth_active:
+        try:
+            from fastmcp.server.dependencies import get_access_token as _gat  # type: ignore
+            _get_access_token = _gat
+        except Exception:
+            try:
+                from mcp.server.fastmcp.dependencies import get_access_token as _gat  # type: ignore
+                _get_access_token = _gat
+            except Exception:
+                _get_access_token = None
+
+        if config.google_allowed_emails:
+            allowed_email_set = {email.lower() for email in config.google_allowed_emails if email}
+
+    def _run_tool_authorized(callable_: Callable[[], Any]) -> Any:
+        if allowed_email_set:
+            if _get_access_token is None:
+                raise ValueError("Authentication token unavailable; access denied.")
+            try:
+                token = _get_access_token()
+            except Exception as exc:  # pragma: no cover - depends on auth backend
+                raise ValueError("Authentication required.") from exc
+            claims = getattr(token, "claims", {}) or {}
+            email = str(claims.get("email", "")).lower()
+            if email not in allowed_email_set:
+                raise ValueError("Authenticated email is not allowed to access this server.")
+        return _run_tool(callable_)
+
     # Register a read-only Markdown cheat sheet as a resource
     cheatsheet_path = (Path(__file__).resolve().parent.parent / "docs" / "beanquery-cheatsheet.md").resolve()
     if cheatsheet_path.exists():
@@ -104,7 +134,7 @@ def create_server(config: AppConfig):
 
     @server.tool(name="list_accounts", description="List accounts with metadata from the configured ledger.")
     def list_accounts(include_closed: bool = False) -> ListAccountsResult:
-        return _run_tool(lambda: ledger.list_accounts(include_closed=include_closed))
+        return _run_tool_authorized(lambda: ledger.list_accounts(include_closed=include_closed))
 
     @server.tool(name="balance", description="Compute balances for accounts over a date range. Dates are ISO (YYYY-MM-DD). If you set only end_date, it's treated as 'as-of' date. Use convert_to to value in a target currency when price data exists.")
     def balance(
@@ -125,7 +155,7 @@ def create_server(config: AppConfig):
             convert_to=convert_to,
             rollup=rollup,
         )
-        return _run_tool(lambda: ledger.balance(req))
+        return _run_tool_authorized(lambda: ledger.balance(req))
 
     @server.tool(name="income_sheet", description="Generate an income statement for the requested period (Income, Expenses, Net). Dates are ISO (YYYY-MM-DD).")
     def income_sheet(
@@ -134,7 +164,7 @@ def create_server(config: AppConfig):
         convert_to: Annotated[str | None, Field(description="Target currency to value results (uses price data if available). ")] = None,
     ) -> IncomeSheetResult:
         req = IncomeSheetRequest(start_date=_req_date(start_date), end_date=_req_date(end_date), convert_to=convert_to)
-        return _run_tool(lambda: ledger.income_sheet(req))
+        return _run_tool_authorized(lambda: ledger.income_sheet(req))
 
     @server.tool(name="list_transactions", description="List transactions with filters (date/account/payee/narration/tags/metadata) and pagination.")
     def list_transactions(
@@ -161,7 +191,7 @@ def create_server(config: AppConfig):
             offset=offset,
             include_postings=include_postings,
         )
-        return _run_tool(lambda: ledger.list_transactions(req))
+        return _run_tool_authorized(lambda: ledger.list_transactions(req))
 
     @server.tool(name="insert_transaction", description="Insert a balanced transaction; supports dry-run preview. Provide postings with amounts that sum to zero across currencies.")
     def insert_transaction(
@@ -186,7 +216,7 @@ def create_server(config: AppConfig):
             txn_id=txn_id,
             dry_run=dry_run,
         )
-        return _run_tool(lambda: ledger.insert_transaction(req))
+        return _run_tool_authorized(lambda: ledger.insert_transaction(req))
 
     @server.tool(name="remove_transaction", description="Remove a transaction by txn_id; supports dry-run preview.")
     def remove_transaction(
@@ -194,13 +224,13 @@ def create_server(config: AppConfig):
         dry_run: Annotated[bool | None, Field(description="If true, do not write—return a diff preview only.")] = None,
     ) -> RemoveTransactionResult:
         req = RemoveTransactionRequest(txn_id=txn_id, dry_run=dry_run)
-        return _run_tool(lambda: ledger.remove_transaction(req))
+        return _run_tool_authorized(lambda: ledger.remove_transaction(req))
 
     @server.tool(name="query", description="Execute a BeanQuery (BeanQuery/beanquery) read-only query. Example: SELECT account, sum(position) WHERE account ~ '^Assets' GROUP BY account ORDER BY account. Note: compare dates using date('YYYY-MM-DD').")
     def bean_query(
         query: Annotated[str, Field(description="BeanQuery SQL-like query. Use date('YYYY-MM-DD') for date comparisons.")]
     ) -> BeanQueryResult:
-        return _run_tool(lambda: ledger.run_query(query))
+        return _run_tool_authorized(lambda: ledger.run_query(query))
 
     @server.tool(
         name="example_queries",
@@ -210,28 +240,30 @@ def create_server(config: AppConfig):
         ),
     )
     def example_queries() -> list[dict[str, str]]:
-        return [
-            {
-                "name": "Assets by Account",
-                "description": "Sum asset balances per account.",
-                "query": "SELECT account, sum(position) WHERE account ~ '^Assets' GROUP BY account ORDER BY account",
-            },
-            {
-                "name": "Expenses Total (Jan 2020)",
-                "description": "Total expenses for January 2020.",
-                "query": "SELECT sum(position) WHERE account ~ '^Expenses' AND date >= date('2020-01-01') AND date <= date('2020-01-31')",
-            },
-            {
-                "name": "Expenses by Category",
-                "description": "Categorized expenses, largest first.",
-                "query": "SELECT account, sum(position) WHERE account ~ '^Expenses' GROUP BY account ORDER BY sum(position) DESC",
-            },
-            {
-                "name": "Income by Payee",
-                "description": "Income totals by payee.",
-                "query": "SELECT payee, sum(position) WHERE account ~ '^Income' GROUP BY payee ORDER BY sum(position)",
-            },
-        ]
+        return _run_tool_authorized(
+            lambda: [
+                {
+                    "name": "Assets by Account",
+                    "description": "Sum asset balances per account.",
+                    "query": "SELECT account, sum(position) WHERE account ~ '^Assets' GROUP BY account ORDER BY account",
+                },
+                {
+                    "name": "Expenses Total (Jan 2020)",
+                    "description": "Total expenses for January 2020.",
+                    "query": "SELECT sum(position) WHERE account ~ '^Expenses' AND date >= date('2020-01-01') AND date <= date('2020-01-31')",
+                },
+                {
+                    "name": "Expenses by Category",
+                    "description": "Categorized expenses, largest first.",
+                    "query": "SELECT account, sum(position) WHERE account ~ '^Expenses' GROUP BY account ORDER BY sum(position) DESC",
+                },
+                {
+                    "name": "Income by Payee",
+                    "description": "Income totals by payee.",
+                    "query": "SELECT payee, sum(position) WHERE account ~ '^Income' GROUP BY payee ORDER BY sum(position)",
+                },
+            ]
+        )
 
     @server.tool(
         name="natural_language_query",
@@ -244,27 +276,18 @@ def create_server(config: AppConfig):
         question: Annotated[str, Field(description="Natural-language question to map to a safe query.")]
     ) -> NaturalLanguageResult:
         req = NaturalLanguageRequest(question=question)
-        return _run_tool(lambda: ledger.natural_language_query(req))
+        return _run_tool_authorized(lambda: ledger.natural_language_query(req))
 
     # Optionally expose a protected tool to introspect authenticated Google user info
-    if _auth_active:
-        _get_access_token = None
-        try:
-            from fastmcp.server.dependencies import get_access_token as _gat  # type: ignore
-            _get_access_token = _gat
-        except Exception:
-            try:
-                from mcp.server.fastmcp.dependencies import get_access_token as _gat  # type: ignore
-                _get_access_token = _gat
-            except Exception:
-                _get_access_token = None
+    if _auth_active and _get_access_token is not None:
 
-        if _get_access_token is not None:
-            @server.tool(
-                name="get_user_info",
-                description="Return information about the authenticated Google user (requires OAuth).",
-            )
-            def get_user_info() -> dict[str, Any]:
+        @server.tool(
+            name="get_user_info",
+            description="Return information about the authenticated Google user (requires OAuth).",
+        )
+        def get_user_info() -> dict[str, Any]:
+
+            def _build() -> dict[str, Any]:
                 token = _get_access_token()
                 claims = getattr(token, "claims", {}) or {}
                 return {
@@ -274,6 +297,8 @@ def create_server(config: AppConfig):
                     "picture": claims.get("picture"),
                     "locale": claims.get("locale"),
                 }
+
+            return _run_tool_authorized(_build)
 
     return server
 

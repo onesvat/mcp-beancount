@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Any, Mapping
 
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator, field_validator
 
 from .exceptions import ConfigError
 
@@ -67,6 +67,19 @@ class AppConfig(BaseModel):
         default=None,
         description="Optional OAuth redirect path (defaults to provider's /auth/callback).",
     )
+    google_allowed_emails: list[str] = Field(
+        default_factory=list,
+        description="Comma- or list-defined email allowlist. Empty list means allow all authenticated users.",
+    )
+
+    @field_validator("google_allowed_emails", mode="before")
+    @staticmethod
+    def _parse_allowed_emails(value: Any) -> list[str] | Any:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [part.strip() for part in value.replace(" ", ",").split(",") if part.strip()]
+        return value
 
     model_config = {"validate_assignment": True}
 
@@ -94,6 +107,8 @@ class AppConfig(BaseModel):
                     "google_base_url",
                     f"http://{self.http_host}:{self.http_port}",
                 )
+            normalized = [email.strip().lower() for email in self.google_allowed_emails if email.strip()]
+            object.__setattr__(self, "google_allowed_emails", normalized)
         return self
 
 
@@ -162,6 +177,7 @@ def load_config(
         "GOOGLE_BASE_URL": "google_base_url",
         "GOOGLE_REQUIRED_SCOPES": "google_required_scopes",
         "GOOGLE_REDIRECT_PATH": "google_redirect_path",
+        "GOOGLE_ALLOWED_EMAILS": "google_allowed_emails",
     }
 
     for env_key, field_name in env_mapping.items():
@@ -177,6 +193,9 @@ def load_config(
                 # Comma or space separated list
                 scopes = [s.strip() for s in value.replace(" ", ",").split(",") if s.strip()]
                 config_data[field_name] = scopes
+            elif field_name in {"google_allowed_emails"}:
+                emails = [s.strip() for s in value.replace(" ", ",").split(",") if s.strip()]
+                config_data[field_name] = emails
             else:
                 config_data[field_name] = value
 
