@@ -1,0 +1,138 @@
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Any, Mapping
+
+from pydantic import BaseModel, Field, ValidationError, model_validator
+
+from .exceptions import ConfigError
+
+CONFIG_ENV_PREFIX = "MCP_BEANCOUNT_"
+DEFAULT_CONFIG_FILENAMES = ("mcp-beancount.toml", ".mcp-beancount.toml")
+
+
+class AppConfig(BaseModel):
+    """Runtime configuration for the MCP Beancount server."""
+
+    ledger_path: Path = Field(description="Path to the root Beancount ledger file.")
+    default_currency: str | None = Field(
+        default=None,
+        description="Default currency to use for valuations when none is supplied.",
+    )
+    timezone: str = Field(default="UTC", description="Local timezone identifier for date handling.")
+    locale: str | None = Field(default=None, description="Locale used when formatting responses.")
+    backup_dir: Path | None = Field(
+        default=None,
+        description="Directory where timestamped ledger backups will be written.",
+    )
+    backup_retention: int | None = Field(
+        default=10,
+        ge=0,
+        description="Maximum number of backups to keep (0 = unlimited).",
+    )
+    lock_timeout: float = Field(default=10.0, ge=0.1, description="Seconds to wait for the ledger file lock.")
+    dry_run_default: bool = Field(default=False, description="Whether tools should default to dry-run mode.")
+    http_host: str = Field(default="127.0.0.1", description="HTTP host for the MCP server.")
+    http_port: int = Field(default=8765, ge=1, le=65535, description="HTTP port for the MCP server.")
+    http_path: str = Field(default="/mcp", description="HTTP path prefix for the MCP transport.")
+    enable_nl: bool = Field(default=True, description="Enable the natural-language BeanQuery tool.")
+
+    model_config = {"validate_assignment": True}
+
+    @model_validator(mode="after")
+    def _normalise_paths(self) -> "AppConfig":
+        ledger_path = self.ledger_path.expanduser().resolve()
+        if not ledger_path.exists():
+            raise ConfigError(f"Configured ledger file does not exist: {ledger_path}")
+        if not ledger_path.is_file():
+            raise ConfigError(f"Configured ledger path is not a file: {ledger_path}")
+
+        backup_dir = self.backup_dir or ledger_path.parent / ".backups"
+        object.__setattr__(self, "ledger_path", ledger_path)
+        object.__setattr__(self, "backup_dir", backup_dir.expanduser().resolve())
+        return self
+
+
+def _load_toml_config(path: Path) -> dict[str, Any]:
+    import tomllib
+
+    with path.open("rb") as handle:
+        return tomllib.load(handle)
+
+
+def load_config(
+    explicit_path: str | os.PathLike[str] | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> AppConfig:
+    """Load configuration from a file and environment variables."""
+
+    env = dict(env or os.environ)
+    config_path: Path | None = None
+
+    if explicit_path:
+        config_candidate = Path(explicit_path).expanduser()
+        if not config_candidate.exists():
+            raise ConfigError(f"Configuration file not found: {config_candidate}")
+        config_path = config_candidate
+    else:
+        env_path = env.get(f"{CONFIG_ENV_PREFIX}CONFIG")
+        if env_path:
+            candidate = Path(env_path).expanduser()
+            if not candidate.exists():
+                raise ConfigError(f"Environment-selected config file not found: {candidate}")
+            config_path = candidate
+        else:
+            for filename in DEFAULT_CONFIG_FILENAMES:
+                candidate = Path(filename).expanduser()
+                if candidate.exists():
+                    config_path = candidate
+                    break
+
+    file_data: dict[str, Any] = {}
+    if config_path:
+        file_data = _load_toml_config(config_path)
+
+    config_data: dict[str, Any] = {}
+    config_data.update(file_data)
+
+    # Apply environment overrides.
+    env_mapping = {
+        "LEDGER": "ledger_path",
+        "LEDGER_PATH": "ledger_path",
+        "DEFAULT_CURRENCY": "default_currency",
+        "TIMEZONE": "timezone",
+        "LOCALE": "locale",
+        "BACKUP_DIR": "backup_dir",
+        "BACKUP_RETENTION": "backup_retention",
+        "LOCK_TIMEOUT": "lock_timeout",
+        "DRY_RUN_DEFAULT": "dry_run_default",
+        "HTTP_HOST": "http_host",
+        "HTTP_PORT": "http_port",
+        "HTTP_PATH": "http_path",
+        "ENABLE_NL": "enable_nl",
+    }
+
+    for env_key, field_name in env_mapping.items():
+        value = env.get(f"{CONFIG_ENV_PREFIX}{env_key}")
+        if value is not None:
+            if field_name in {"lock_timeout"}:
+                config_data[field_name] = float(value)
+            elif field_name in {"http_port", "backup_retention"}:
+                config_data[field_name] = int(value)
+            elif field_name in {"dry_run_default", "enable_nl"}:
+                config_data[field_name] = value.lower() in {"1", "true", "yes", "on"}
+            else:
+                config_data[field_name] = value
+
+    if "ledger_path" not in config_data:
+        raise ConfigError(
+            "Ledger path must be configured via config file or "
+            f"{CONFIG_ENV_PREFIX}LEDGER(_PATH) environment variable."
+        )
+
+    try:
+        return AppConfig(**config_data)
+    except ValidationError as exc:
+        raise ConfigError(str(exc)) from exc

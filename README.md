@@ -85,3 +85,6 @@ MCP Beancount Tool — Project Documentation
   - `uv run -m pytest`
 - Lint (if desired):
   - `uv run ruff check .`
+
+**Example configuration**
+- `tests/fixtures/mcp-beancount.toml` demonstrates a minimal config pointing at the bundled example ledger. Copy and adjust paths before running `uv run mcp-beancount --config <file>`.

@@ -1,0 +1,4 @@
+ledger_path = "tests/fixtures/example.beancount"
+default_currency = "USD"
+backup_dir = "tests/fixtures/.backups"
+dry_run_default = true
