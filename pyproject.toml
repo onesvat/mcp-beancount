@@ -15,6 +15,7 @@ dependencies = [
   "beancount==3.2.0",
   "beanquery==0.2.0",
   "mcp[cli]>=1.10.1",
+  "fastmcp>=0.1.0",
 ]
 
 [project.optional-dependencies]
