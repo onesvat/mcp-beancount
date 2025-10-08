@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.ruff_cache/
+
+# Environments
+.venv/
+.env
+.env.*
+
+# uv
+uv.lock
+
+# OS
+.DS_Store
+Thumbs.db

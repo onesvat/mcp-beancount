@@ -1,0 +1,21 @@
+option "title" "Example Ledger"
+option "operating_currency" "USD"
+
+1970-01-01 open Equity:Opening-Balances
+2019-01-01 open Assets:Bank:Checking USD
+2019-01-01 open Expenses:Food USD
+2019-01-01 open Expenses:Rent USD
+2019-01-01 open Income:Salary USD
+
+2020-01-01 * "Employer" "Salary January"
+  Assets:Bank:Checking   3000.00 USD
+  Income:Salary         -3000.00 USD
+
+2020-01-05 * "Landlord" "Rent"
+  Expenses:Rent          1200.00 USD
+  Assets:Bank:Checking  -1200.00 USD
+
+2020-01-07 * "Grocery Store" "Groceries"
+  Expenses:Food           150.25 USD
+  Assets:Bank:Checking   -150.25 USD
+
